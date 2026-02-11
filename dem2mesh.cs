@@ -8,14 +8,14 @@ using Rhino.Geometry;
 public class Script_Instance : GH_ScriptInstance
 {
   private void RunScript(
-		string xml_data,
-		int jgd_zone,
-		int sample_step,
-		Point3d target_point,
-		double size,
-		int mode,
-		ref object info,
-		ref object output_mesh)
+        string xml_data,
+        int jgd_zone,
+        int sample_step,
+        Point3d target_point,
+        double size,
+        int mode,
+        ref object info,
+        ref object output_mesh)
   {
     if (string.IsNullOrEmpty(xml_data)) {
       info = "Wait: xml_data が未入力です。";
@@ -47,6 +47,7 @@ public class Script_Instance : GH_ScriptInstance
       string tupleList = doc.SelectSingleNode(".//gml:tupleList", ns).InnerText.Trim();
       string[] lines = tupleList.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
 
+      // --- 平面直角座標系の設定 ---
       int activeZone = (jgd_zone <= 0) ? AutoDetectJGDZone((lLat + uLat) / 2.0, (lLon + uLon) / 2.0) : jgd_zone;
       double[] origin_lats = { 33, 33, 36, 33, 36, 36, 36, 36, 36, 40, 40, 40, 44, 26, 26, 26, 26, 20, 26 };
       double[] origin_lons = { 129.5, 131.0, 132.166666666667, 133.5, 134.333333333333, 136.0, 137.166666666667, 138.5, 139.833333333333, 140.833333333333, 140.25, 142.25, 144.25, 142.0, 127.5, 124.0, 131.0, 136.0, 154.0 };
@@ -102,6 +103,7 @@ public class Script_Instance : GH_ScriptInstance
       mesh.Normals.ComputeNormals();
       output_mesh = mesh;
 
+      // --- 情報出力の構築 ---
       List<string> log = new List<string>();
       log.Add("== Source Info ==");
       log.Add(string.Format(" Lat Range: {0} to {1}", ToDMS(lLat), ToDMS(uLat)));
@@ -110,6 +112,11 @@ public class Script_Instance : GH_ScriptInstance
       log.Add("");
       log.Add("== Current Settings ==");
       log.Add(" JGD Zone: " + activeZone + (jgd_zone <= 0 ? " (Auto Detected)" : " (Manual)"));
+      
+      // 原点の緯度経度を出力
+      log.Add(string.Format(" Origin Lat: {0} ({1})", ToDMS(phi0_deg), phi0_deg));
+      log.Add(string.Format(" Origin Lon: {0} ({1})", ToDMS(lam0_deg), lam0_deg));
+      
       log.Add(" Mode: " + (mode == 2 ? "High (6th Order + Bilinear)" : (mode == 1 ? "Standard (6th Order)" : "Fast (3rd Order)")));
       log.Add(string.Format(" Output Mesh: {0}x{1} pts, {2} faces", nX, nY, faceCount));
       info = log;
