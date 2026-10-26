@@ -57,6 +57,7 @@ public static class Tests {
     Clipping();
     Errors();
     Zones();
+    ZoneDetection();
     Culture();
     Units();
     TypeSplit();
@@ -165,6 +166,71 @@ public static class Tests {
       Check(z + "系の原点が (0, 0)", d < 0.01, "ずれ " + d.ToString("F4") + " m");
     }
     G.Lat0 = lat0; G.Lon0 = lon0;
+  }
+
+  // 系の自動判定（地域メッシュの表）。正解は告示（平成14年国土交通省告示第9号）の適用区域
+  static void ZoneDetection() {
+    Section("合成: 系の自動判定（地域メッシュの表）");
+    var flags = BindingFlags.NonPublic | BindingFlags.Static;
+    object[] t = { null, null };
+    typeof(Script_Instance).GetMethod("LoadZoneTable", flags).Invoke(null, t);
+    var cells = (System.Collections.IDictionary)t[0]; var cands = (System.Collections.IDictionary)t[1];
+    Check("埋め込んだ表が展開できる（あいまいなメッシュ 3359）", cands.Count == 3359 && cells.Count > 4571, "要素 " + cells.Count + "、あいまい " + cands.Count);
+
+    var zf = typeof(Script_Instance).GetMethod("ZoneFromLatLon", flags);
+    Func<double, double, object[]> Z = (lat, lon) => { object[] a = { lat, lon, null, null }; a[0] = zf.Invoke(null, a); return a; }; // {系, -, 決め方, 候補}
+
+    // 都道府県庁所在地などの代表点（緯度, 経度, 正しい系）。以前の経度だけの判定では21地点が外れていた
+    object[][] pts = {
+      new object[] { "札幌市", 43.06, 141.35, 12 }, new object[] { "旭川市", 43.77, 142.37, 12 }, new object[] { "小樽市", 43.19, 141.00, 11 },
+      new object[] { "函館市", 41.77, 140.73, 11 }, new object[] { "帯広市", 42.92, 143.20, 13 }, new object[] { "釧路市", 42.98, 144.38, 13 },
+      new object[] { "青森市", 40.82, 140.74, 10 }, new object[] { "秋田市", 39.72, 140.10, 10 }, new object[] { "盛岡市", 39.70, 141.15, 10 },
+      new object[] { "仙台市", 38.27, 140.87, 10 }, new object[] { "山形市", 38.24, 140.36, 10 }, new object[] { "福島市", 37.75, 140.47, 9 },
+      new object[] { "水戸市", 36.34, 140.45, 9 }, new object[] { "東京都庁", 35.69, 139.69, 9 }, new object[] { "新潟市", 37.90, 139.02, 8 },
+      new object[] { "長野市", 36.65, 138.18, 8 }, new object[] { "静岡市", 34.98, 138.38, 8 }, new object[] { "名古屋市", 35.18, 136.91, 7 },
+      new object[] { "金沢市", 36.59, 136.63, 7 }, new object[] { "福井市", 36.06, 136.22, 6 }, new object[] { "津市", 34.73, 136.51, 6 },
+      new object[] { "大阪市", 34.69, 135.50, 6 }, new object[] { "神戸市", 34.69, 135.18, 5 }, new object[] { "鳥取市", 35.50, 134.24, 5 },
+      new object[] { "岡山市", 34.66, 133.93, 5 }, new object[] { "倉敷市", 34.59, 133.77, 5 }, new object[] { "松江市", 35.47, 133.05, 3 },
+      new object[] { "広島市", 34.40, 132.46, 3 }, new object[] { "福山市", 34.49, 133.36, 3 }, new object[] { "山口市", 34.19, 131.47, 3 },
+      new object[] { "高松市", 34.34, 134.04, 4 }, new object[] { "徳島市", 34.07, 134.56, 4 }, new object[] { "松山市", 33.84, 132.77, 4 },
+      new object[] { "高知市", 33.56, 133.53, 4 }, new object[] { "福岡市", 33.61, 130.42, 2 }, new object[] { "大分市", 33.24, 131.61, 2 },
+      new object[] { "長崎市", 32.74, 129.87, 1 }, new object[] { "対馬市", 34.20, 129.29, 1 }, new object[] { "鹿児島市", 31.56, 130.56, 2 },
+      new object[] { "奄美市", 28.38, 129.49, 1 }, new object[] { "与論町", 27.05, 128.42, 1 }, new object[] { "那覇市", 26.21, 127.68, 15 },
+      new object[] { "石垣市", 24.34, 124.16, 16 }, new object[] { "南大東村", 25.83, 131.23, 17 }, new object[] { "父島", 27.09, 142.19, 14 },
+      new object[] { "沖ノ鳥島", 20.43, 136.08, 18 }, new object[] { "南鳥島", 24.29, 153.98, 19 } };
+    var wrong = new List<string>();
+    foreach (var p in pts) { var r = Z((double)p[1], (double)p[2]); if ((int)r[0] != (int)p[3]) wrong.Add(p[0] + "（正 " + p[3] + "、判定 " + r[0] + "）"); }
+    Check("代表47地点がすべて告示どおりの系", wrong.Count == 0, wrong.Count == 0 ? "47/47" : string.Join(", ", wrong));
+
+    // 広島県と岡山県の境（3系と5系）のメッシュ
+    var tie = Z(34.5708333, 133.43125);   // 51336384: 候補 3/5、周りも 2:2
+    Check("境界のメッシュで周りも同数なら、番号の小さい系（3系）", (int)tie[0] == 3 && tie[2].ToString() == "BoundaryTie" && (string)tie[3] == "3/5", tie[0] + " " + tie[2] + " " + tie[3]);
+    var maj = Z(34.4791667, 133.44375);   // 51335375: 候補 3/5、周りは 3系が多い
+    Check("境界のメッシュは周りの多数決（3系）", (int)maj[0] == 3 && maj[2].ToString() == "Boundary", maj[0] + " " + maj[2] + " " + maj[3]);
+    var sea = Z(33.0, 138.0);             // 太平洋
+    Check("表に無い地点（海上）は経度で代用", sea[2].ToString() == "NotInTable" && (int)sea[0] == 8, sea[0] + " " + sea[2]);
+
+    // RunScript で jgd_zone = 0（自動判定）
+    double lat0 = G.Lat0, lon0 = G.Lon0;
+    try {
+      G.Lat0 = 34.40; G.Lon0 = 132.46;   // 広島市
+      var ok = G.Call(G.Tile(0, 0, 5, 4, 4), 0, 1, Point3d.Unset, 0, 0);
+      Check("区画の系が表で決まれば警告なし", Line(ok, "JGD Zone").Contains("3 (Auto Detected: mesh table, 1/1 tiles)") && !Lines(ok)[0].StartsWith("Warning") && Line(ok, "[1]").Contains("zone 3 (table)"), Line(ok, "JGD Zone").Trim());
+      G.Lat0 = 34.5708333 - 2 * G.D; G.Lon0 = 133.43125 - 2.5 * G.D;   // 同数の境界のメッシュの中
+      var tieRun = G.Call(G.Tile(0, 0, 5, 4, 4), 0, 1, Point3d.Unset, 0, 0);
+      Check("同数の境界の区画は Warning を出して小さい番号の系", Line(tieRun, "JGD Zone").Contains("3 (Auto") && Lines(tieRun)[0].StartsWith("Warning: 区画 1 は系の境界にあり、候補（3/5）が周りのメッシュでも同数"), Lines(tieRun)[0]);
+      G.Lat0 = 34.4541667 - 2 * G.D; G.Lon0 = 133.45 - 5 * G.D;           // 東経133.45°の西が3系、東が5系
+      var split = G.Call(new List<string> { G.Tile(0, 0, 5, 4, 4), G.Tile(5, 0, 5, 4, 4) }, 0, 1, Point3d.Unset, 0, 0);
+      Check("区画で系が分かれると Warning（同数なら小さい番号の3系）", Line(split, "JGD Zone").Contains("3 (Auto Detected: mesh table, 1/2 tiles)")
+            && Lines(split).Any(l => l.StartsWith("Warning: 区画によって系が違います（3系: 区画 1 / 5系: 区画 2）")) && Line(split, "[2]").Contains("zone 5"), Line(split, "JGD Zone").Trim());
+      G.Lat0 = 33.0; G.Lon0 = 138.0;                                       // 海上
+      var seaRun = G.Call(G.Tile(0, 0, 5, 4, 4), 0, 1, Point3d.Unset, 0, 0);
+      Check("表に無い区画は Warning を出して経度で代用", Lines(seaRun)[0].StartsWith("Warning: 区画 1 は地域メッシュの表に無い"), Lines(seaRun)[0]);
+      var manual = G.Call(G.Tile(0, 0, 5, 4, 4), 8, 1, Point3d.Unset, 0, 0);
+      Check("系を指定したときは判定しない（警告なし）", Line(manual, "JGD Zone").Contains("8 (Manual)") && !Lines(manual)[0].StartsWith("Warning") && !Line(manual, "[1]").Contains("zone"));
+    } finally {
+      G.Lat0 = lat0; G.Lon0 = lon0;
+    }
   }
 
   // PC の地域設定（小数点が「,」の言語など）に左右されない
@@ -280,7 +346,7 @@ public static class Tests {
     else {
       var a = G.Call(new List<string> { t62, t63 }, 0, 1, Point3d.Unset, 0, 0);
       var P = ((Mesh)a[7]).Vertices.P; int nX = 450, nY = 150;
-      Check("62+63: 系の自動判定は3系（広島市付近）", Line(a, "JGD Zone").Contains("3 (Auto Detected)"));
+      Check("62+63: 系の自動判定は3系（広島市付近、2区画とも表で決まる）", Line(a, "JGD Zone").Contains("3 (Auto Detected: mesh table, 2/2 tiles)") && !Lines(a)[0].StartsWith("Warning"), Line(a, "JGD Zone").Trim());
       Check("62+63: 450×150点で無効な点がない", P.Count == nX * nY && P.All(v => v.set));
       Check("62+63: 面の数 = 449×149（すき間なし）", ((Mesh)a[7]).Faces.Count == (nX - 1) * (nY - 1));
       var p62 = ((Mesh)G.Call(t62, 0, 1, Point3d.Unset, 0, 0)[7]).Vertices.P;

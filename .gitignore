@@ -4,3 +4,7 @@ sample/
 
 # テストのビルド結果（tests/run_tests.ps1 が作る）
 tests/build/
+
+# 系の表を作るときのビルド結果と、統計局のCSV（tools/build_zone_table.ps1 が作る・取得する）
+tools/build/
+tools/stat_mesh/
