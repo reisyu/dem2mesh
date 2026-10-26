@@ -55,6 +55,7 @@ public static class Tests {
     CellCenter();
     MergeTiles();
     Clipping();
+    FilePaths();
     Errors();
     Zones();
     ZoneDetection();
@@ -119,6 +120,19 @@ public static class Tests {
     Check("面の数にすき間がない（9×7 = 63）", ((Mesh)a[7]).Faces.Count == 63, ((Mesh)a[7]).Faces.Count + " 面");
     var b = G.Run(new List<string> { parts[0], parts[1], parts[2] }, 1, Point3d.Unset, 0);
     Check("1区画欠けたL字（欠けた部分だけ面がない）", ((Mesh)b[7]).Faces.Count == 9 * 3 + 4 * 4, ((Mesh)b[7]).Faces.Count + " 面");
+    // 10m（セル 0.4秒）と1m（セル 0.04秒）でも、統合とセルの中心の位置が正しい（実データでは未確認）
+    var proj = Projector(36.0, 139.833333333333);
+    foreach (var res in new[] { new { name = "10m", d = 0.4 / 3600 }, new { name = "1m", d = 0.04 / 3600 } }) {
+      string bigD = G.Tile(0, 0, 10, 8, 8, 0, -1, res.d);
+      var partsD = new List<string> { G.Tile(5, 4, 5, 4, 8, 0, -1, res.d), G.Tile(0, 0, 5, 4, 8, 0, -1, res.d), G.Tile(5, 0, 5, 4, 8, 0, -1, res.d), G.Tile(0, 4, 5, 4, 8, 0, -1, res.d) };
+      var md = G.Run(partsD, 1, Point3d.Unset, 0);
+      var first = proj(G.Lat0 + 8 * res.d - res.d / 2, G.Lon0 + res.d / 2);
+      var p0 = ((Mesh)md[7]).Vertices.P[0];
+      double dd = Math.Max(Math.Abs(p0.X - first.X), Math.Abs(p0.Y - first.Y));
+      Check(res.name + "（セル " + (res.d * 3600).ToString("0.##", CultureInfo.InvariantCulture) + "秒）: 2×2区画 = 1区画で、北西の点がセルの中心",
+            G.Dump(md) == G.Dump(G.Run(bigD, 1, Point3d.Unset, 0)) && ((Mesh)md[7]).Faces.Count == 63 && dd < 0.001, "ずれ " + dd.ToString("F4") + " m");
+    }
+
     // 先頭・末尾が省略された区画（startPoint）
     var c = G.Run(G.Tile(0, 0, 10, 8, 8, 7, 70), 1, Point3d.Unset, 0);
     var P = ((Mesh)c[7]).Vertices.P;
@@ -138,6 +152,40 @@ public static class Tests {
     var eBig = G.Run(big, 1, new Point3d(q.X, q.Y, 0), 14);
     Check("区画の境目をまたぐ切り抜き = 1区画で切り抜いた結果", FaceKeys((Mesh)e[7]).SequenceEqual(FaceKeys((Mesh)eBig[7])) && ((Mesh)e[7]).Faces.Count > 0);
     Check("範囲にかかる区画がないとき", G.Info(G.Run(parts, 1, new Point3d(0, 0, 0), 10)).Contains("クリッピング範囲にかかる区画がありません"));
+  }
+
+  // xml_data にファイルのパスを渡す（Read File を通さない）
+  static void FilePaths() {
+    Section("合成: ファイルのパスで渡す");
+    string dir = Path.Combine(Path.GetTempPath(), "dem2mesh_tests_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(dir);
+    try {
+      var parts = new List<string> { G.Tile(5, 4, 5, 4, 8), G.Tile(0, 0, 5, 4, 8), G.Tile(5, 0, 5, 4, 8), G.Tile(0, 4, 5, 4, 8) };
+      var paths = new List<string>();
+      for (int i = 0; i < parts.Count; i++) {
+        string p = Path.Combine(dir, "tile" + i + ".xml");
+        if (i == 1) File.WriteAllText(p, parts[i], new UTF8Encoding(true));   // BOM 付き
+        else File.WriteAllText(p, parts[i], new UTF8Encoding(false));
+        paths.Add(p);
+      }
+      string fromContent = G.Dump(G.Run(parts, 1, Point3d.Unset, 0));
+      Check("パスで渡しても中身で渡したのと同じメッシュ（BOM 付きの UTF-8 を含む）", G.Dump(G.Run(paths, 1, Point3d.Unset, 0)) == fromContent);
+      var mixed = new List<string> { paths[0], parts[1], "  \"" + paths[2] + "\"  ", parts[3] };
+      Check("パスと中身を混ぜても、引用符付きのパスでも同じメッシュ", G.Dump(G.Run(mixed, 1, Point3d.Unset, 0)) == fromContent);
+
+      // 古いGMLのように、XML 宣言が Shift_JIS のファイル
+      string sjisPath = Path.Combine(dir, "sjis.xml");
+      File.WriteAllText(sjisPath, "<?xml version=\"1.0\" encoding=\"Shift_JIS\"?>" + parts[1], Encoding.GetEncoding(932));
+      var sj = G.Call(new List<string> { sjisPath }, 9, 1, Point3d.Unset, 0, 1);
+      var sjNames = sj[9] as List<string>;
+      Check("XML 宣言が Shift_JIS のファイルも読める（種別「地表面」も文字化けしない）", sjNames != null && sjNames.Count == 1 && sjNames[0] == "地表面", G.Info(sj).Split('\n')[0]);
+
+      string missing = Path.Combine(dir, "nothing.xml");
+      var err = G.Run(new List<string> { paths[0], missing }, 1, Point3d.Unset, 0);
+      Check("存在しないパスは、どの区画か分かるエラー", G.Info(err).StartsWith("Error: 区画 2: ファイルが見つかりません（GMLの中身でもありません）: ") && G.Info(err).Contains("nothing.xml"), G.Info(err));
+    } finally {
+      try { Directory.Delete(dir, true); } catch { }
+    }
   }
 
   static void Errors() {
@@ -231,7 +279,13 @@ public static class Tests {
       var seaRun = G.Call(G.Tile(0, 0, 5, 4, 4), 0, 1, Point3d.Unset, 0, 0);
       Check("表に無い区画は Warning を出して経度で代用", Lines(seaRun)[0].StartsWith("Warning: 区画 1 は地域メッシュの表に無い"), Lines(seaRun)[0]);
       var manual = G.Call(G.Tile(0, 0, 5, 4, 4), 8, 1, Point3d.Unset, 0, 0);
-      Check("系を指定したときは判定しない（警告なし）", Line(manual, "JGD Zone").Contains("8 (Manual)") && !Lines(manual)[0].StartsWith("Warning") && !Line(manual, "[1]").Contains("zone"));
+      Check("系を指定したら、その系で作る（表と同じなら警告なし）", Line(manual, "JGD Zone").Contains("8 (Manual)") && !Lines(manual)[0].StartsWith("Warning") && !Line(manual, "[1]").Contains("zone"), Lines(manual)[0]);
+      G.Lat0 = 34.40; G.Lon0 = 132.46;   // 広島市（3系）
+      var wrongZone = G.Call(G.Tile(0, 0, 5, 4, 4), 9, 1, Point3d.Unset, 0, 0);
+      Check("指定した系が表と違えば Warning（メッシュは指定どおり9系で作る）", Line(wrongZone, "JGD Zone").Contains("9 (Manual)") && wrongZone[7] is Mesh
+            && Lines(wrongZone)[0].StartsWith("Warning: 指定された 9系は、地域メッシュの表で引いた系（3系、1/1 tiles）と違います"), Lines(wrongZone)[0]);
+      var rightZone = G.Call(G.Tile(0, 0, 5, 4, 4), 3, 1, Point3d.Unset, 0, 0);
+      Check("指定した系が表と同じなら警告なし", !Lines(rightZone)[0].StartsWith("Warning"), Lines(rightZone)[0]);
     } finally {
       G.Lat0 = lat0; G.Lon0 = lon0;
     }
@@ -359,10 +413,8 @@ public static class Tests {
       return;
     }
     Console.WriteLine("sample: " + dir);
-    Func<string, string> F = code => {
-      var f = Directory.GetFiles(dir, "FG-GML-5132-53-" + code + "-DEM5A-*.xml").OrderBy(x => x).LastOrDefault();
-      return f == null ? null : File.ReadAllText(f);
-    };
+    Func<string, string> FP = code => Directory.GetFiles(dir, "FG-GML-5132-53-" + code + "-DEM5A-*.xml").OrderBy(x => x).LastOrDefault();
+    Func<string, string> F = code => { var f = FP(code); return f == null ? null : File.ReadAllText(f); };
     string t06 = F("06"), t07 = F("07"), t16 = F("16"), t17 = F("17"), t52 = F("52"), t53 = F("53"), t62 = F("62"), t63 = F("63");
 
     if (t62 == null || t63 == null) Skip("東西の境目（62・63）", "区画のファイルがありません");
@@ -381,6 +433,8 @@ public static class Tests {
         maxd = Math.Max(maxd, Math.Max(Math.Abs(m1.X - s1.X) + Math.Abs(m1.Y - s1.Y) + Math.Abs(m1.Z - s1.Z), Math.Abs(m2.X - s2.X) + Math.Abs(m2.Y - s2.Y) + Math.Abs(m2.Z - s2.Z)));
       }
       Check("62+63: まとめても1区画ずつ読んだ点と同じ位置", maxd < 1e-6, "最大差 " + maxd.ToString("E1") + " m");
+      var byPath = G.Call(new List<string> { FP("62"), FP("63") }, 0, 1, Point3d.Unset, 0, 0);
+      Check("62+63: ファイルのパスで渡しても同じメッシュ", G.Dump(byPath) == G.Dump(a));
       double inner = 0, seam = 0;
       for (int r = 0; r < nY; r++) { inner += P[r * nX + 224].X - P[r * nX + 223].X; seam += P[r * nX + 225].X - P[r * nX + 224].X; }
       Check("62+63: 境目の点の間隔 = 区画の中の間隔", Math.Abs(inner - seam) / nY < 0.001, "境目 " + (seam / nY).ToString("F3") + " m / 内側 " + (inner / nY).ToString("F3") + " m");

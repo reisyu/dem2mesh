@@ -78,6 +78,13 @@ public class Script_Instance : GH_ScriptInstance
       if (jgd_zone > 19)
         throw new Exception("jgd_zone は 0（自動判定）か、1〜19 の系の番号で指定してください（指定された値: " + jgd_zone + "）。");
       int activeZone = (jgd_zone <= 0) ? DetectZone(tiles, warnings, out zoneNote) : jgd_zone;
+      if (jgd_zone > 0) {
+        // 指定された系が、表で引いた系と違えば知らせる（隣の系を意図して使う場合もあるので、メッシュは指定どおりに作る）
+        string tableNote;
+        int tableZone = DetectZone(tiles, new List<string>(), out tableNote);
+        if (tableZone != jgd_zone)
+          warnings.Add("Warning: 指定された " + jgd_zone + "系は、地域メッシュの表で引いた系（" + tableZone + "系、" + tableNote.Replace("Auto Detected: mesh table, ", "") + "）と違います。意図して別の系を使う場合は、このままで構いません。");
+      }
       double[] origin_lats = { 33, 33, 36, 33, 36, 36, 36, 36, 36, 40, 44, 44, 44, 26, 26, 26, 26, 20, 26 };
       double[] origin_lons = { 129.5, 131.0, 132.166666666667, 133.5, 134.333333333333, 136.0, 137.166666666667, 138.5, 139.833333333333, 140.833333333333, 140.25, 142.25, 144.25, 142.0, 127.5, 124.0, 131.0, 136.0, 154.0 };
       double phi0_deg = origin_lats[activeZone - 1];
@@ -257,11 +264,20 @@ public class Script_Instance : GH_ScriptInstance
   }
 
   // --- GMLの読み込み ---
-  private Tile ParseTile(string xml, int no) {
+  // xml_data の各要素は、GMLの中身（先頭が「<」）か、GMLファイルのパスのどちらでもよい。
+  // パスなら Read File を通さずに直接読めるので、Grasshopper で Per Line のオフや Flatten がいらなくなる。
+  // ファイルは XmlDocument.Load で読み、文字コードはファイルの XML 宣言に従う
+  private Tile ParseTile(string source, int no) {
     Tile t = new Tile();
     t.no = no;
     t.doc = new XmlDocument();
-    t.doc.LoadXml(xml);
+    string s = source.Trim();
+    if (s.StartsWith("<")) t.doc.LoadXml(source);
+    else {
+      string path = s.Trim('"');
+      if (!File.Exists(path)) throw new Exception("ファイルが見つかりません（GMLの中身でもありません）: " + path);
+      t.doc.Load(path);
+    }
     t.ns = new XmlNamespaceManager(t.doc.NameTable);
     t.ns.AddNamespace("gml", "http://www.opengis.net/gml/3.2");
     t.ns.AddNamespace("fgd", "http://fgd.gsi.go.jp/spec/2008/FGD_GMLSchema");

@@ -8,7 +8,8 @@ using Rhino.Geometry;
 
 public static class G {
   public const double D = 0.2 / 3600; // DEM5A のセルの大きさ（0.2秒）
-  public static double Lat0 = 35.0, Lon0 = 139.0; // 全体格子の南西の角
+  // 全体格子の南西の角。9系の区域の中（東京駅付近）に置く（テストは9系を指定するので、表で引いた系と違うと Warning が出るため）
+  public static double Lat0 = 35.68, Lon0 = 139.76;
 
   // 全体格子の (gc0, gr0) を北西の角として nx×ny を切り出した区画を作る
   // 標高は全体格子の位置で決まる（100 + 行*1000 + 列）ので、区画を分けても1枚で作っても同じ値になる
