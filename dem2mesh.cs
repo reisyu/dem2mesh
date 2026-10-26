@@ -75,6 +75,8 @@ public class Script_Instance : GH_ScriptInstance
       // --- 平面直角座標系の設定（全区画で共通） ---
       List<string> warnings = new List<string>(); // info の先頭に出す警告
       string zoneNote = "Manual";
+      if (jgd_zone > 19)
+        throw new Exception("jgd_zone は 0（自動判定）か、1〜19 の系の番号で指定してください（指定された値: " + jgd_zone + "）。");
       int activeZone = (jgd_zone <= 0) ? DetectZone(tiles, warnings, out zoneNote) : jgd_zone;
       double[] origin_lats = { 33, 33, 36, 33, 36, 36, 36, 36, 36, 40, 44, 44, 44, 26, 26, 26, 26, 20, 26 };
       double[] origin_lons = { 129.5, 131.0, 132.166666666667, 133.5, 134.333333333333, 136.0, 137.166666666667, 138.5, 139.833333333333, 140.833333333333, 140.25, 142.25, 144.25, 142.0, 127.5, 124.0, 131.0, 136.0, 154.0 };
@@ -424,9 +426,14 @@ public class Script_Instance : GH_ScriptInstance
     }
   }
 
-  private string ToDMS(double dd) {
-    int d = (int)dd; double m_r = (dd - d) * 60; int m = (int)m_r; double s = (m_r - m) * 60;
-    return string.Format("{0}°{1}'{2:F2}\"", d, m, s);
+  // 度 → 度分秒（秒は小数2桁）。先に秒の単位で丸めてから分・度に繰り上げる
+  // （分と秒を切り捨ててから秒を丸めると、9系の原点 139°50′00″ が 139°49'60.00" のように表示されていた）
+  private static string ToDMS(double dd) {
+    string sign = dd < 0 ? "-" : "";
+    long hundredths = (long)Math.Round(Math.Abs(dd) * 360000.0); // 1/100 秒の単位
+    long d = hundredths / 360000, m = hundredths / 6000 % 60;
+    double s = hundredths % 6000 / 100.0;
+    return sign + string.Format(CultureInfo.InvariantCulture, "{0}°{1}'{2:F2}\"", d, m, s);
   }
   // --- 系の自動判定 ---
   // 系の範囲は都道府県（北海道は市町村、東京都・沖縄県・鹿児島県の島は緯度経度の線）で決まっていて、経度だけでは決まらない。

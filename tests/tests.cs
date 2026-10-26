@@ -58,6 +58,7 @@ public static class Tests {
     Errors();
     Zones();
     ZoneDetection();
+    Dms();
     Culture();
     Units();
     TypeSplit();
@@ -142,6 +143,9 @@ public static class Tests {
   static void Errors() {
     Section("合成: 入力の誤り");
     string t = G.Tile(0, 0, 5, 4, 8);
+    var z20 = G.Call(t, 20, 1, Point3d.Unset, 0, 0);
+    Check("系の番号が20以上ならエラー（範囲外の配列エラーにしない）", G.Info(z20).Contains("jgd_zone は 0（自動判定）か、1〜19 の系の番号で指定してください（指定された値: 20）") && z20[7] == null, G.Info(z20));
+    Check("系の番号が19ならメッシュを作る", G.Call(t, 19, 1, Point3d.Unset, 0, 0)[7] is Mesh);
     Check("セルの大きさが違う区画", G.Info(G.Run(new List<string> { t, G.Tile(0, 0, 5, 4, 8, 0, -1, G.D * 2) }, 1, Point3d.Unset, 0)).Contains("区画 2 のセルの大きさが区画 1 と違います"));
     G.Lat0 += G.D * 0.5; string shifted = G.Tile(0, 0, 5, 4, 8); G.Lat0 -= G.D * 0.5;
     Check("格子がずれた区画", G.Info(G.Run(new List<string> { t, shifted }, 1, Point3d.Unset, 0)).Contains("区画 2 の格子が区画 1 の格子と揃っていません"));
@@ -230,6 +234,25 @@ public static class Tests {
       Check("系を指定したときは判定しない（警告なし）", Line(manual, "JGD Zone").Contains("8 (Manual)") && !Lines(manual)[0].StartsWith("Warning") && !Line(manual, "[1]").Contains("zone"));
     } finally {
       G.Lat0 = lat0; G.Lon0 = lon0;
+    }
+  }
+
+  // info の度分秒。秒が 60.00 にならない（繰り上がる）
+  static void Dms() {
+    Section("合成: 度分秒の表示");
+    var f = typeof(Script_Instance).GetMethod("ToDMS", BindingFlags.NonPublic | BindingFlags.Static);
+    Func<double, string> D = v => (string)f.Invoke(null, new object[] { v });
+    string[][] cases = {
+      new[] { "139.833333333333", "139°50'0.00\"" },   // 9系の原点。以前は 139°49'60.00"
+      new[] { "134.333333333333", "134°20'0.00\"" },   // 5系の原点
+      new[] { "132.166666666667", "132°10'0.00\"" },   // 3系の原点
+      new[] { "34.433333333", "34°26'0.00\"" },        // 区画の北端（小数8〜9桁の値）。以前は 34°25'60.00"
+      new[] { "34.4708333333", "34°28'15.00\"" },
+      new[] { "35", "35°0'0.00\"" },
+      new[] { "35.99999999", "36°0'0.00\"" } };      // 度まで繰り上がる
+    foreach (var c in cases) {
+      string got = D(double.Parse(c[0], CultureInfo.InvariantCulture));
+      Check(c[0] + " → " + c[1], got == c[1], got);
     }
   }
 
@@ -348,6 +371,7 @@ public static class Tests {
       var P = ((Mesh)a[7]).Vertices.P; int nX = 450, nY = 150;
       Check("62+63: 系の自動判定は3系（広島市付近、2区画とも表で決まる）", Line(a, "JGD Zone").Contains("3 (Auto Detected: mesh table, 2/2 tiles)") && !Lines(a)[0].StartsWith("Warning"), Line(a, "JGD Zone").Trim());
       Check("62+63: 450×150点で無効な点がない", P.Count == nX * nY && P.All(v => v.set));
+      Check("62+63: info の度分秒に 60.00 秒が出ない", !Lines(a).Any(l => l.Contains("'60.00")), Line(a, "Lat Range").Trim());
       Check("62+63: 面の数 = 449×149（すき間なし）", ((Mesh)a[7]).Faces.Count == (nX - 1) * (nY - 1));
       var p62 = ((Mesh)G.Call(t62, 0, 1, Point3d.Unset, 0, 0)[7]).Vertices.P;
       var p63 = ((Mesh)G.Call(t63, 0, 1, Point3d.Unset, 0, 0)[7]).Vertices.P;

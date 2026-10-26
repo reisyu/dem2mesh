@@ -18,6 +18,7 @@
 | `dem2mesh.cs` | 本体。Grasshopper の C# Script コンポーネントの中身そのもの |
 | `dem2mesh.gh` | 説明メモ付きのサンプル定義。File Path（最初は空）→ Read File → dem2mesh。中に `dem2mesh.cs` のコピーが埋め込まれている |
 | `README.md` | 使い方・パラメータ・系の一覧・データの利用条件・扱える区画数の目安 |
+| `LICENSE` | MIT ライセンス（スクリプトだけに適用。国土地理院のデータや統計局の一覧には適用されない） |
 | `tests/run_tests.ps1` | テストのビルドと実行 |
 | `tests/tests.cs` | テスト本体（合成データ／実データ） |
 | `tests/gml.cs` | 合成GMLの作成と RunScript の呼び出し |
@@ -37,7 +38,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
 
 - **コミットの条件:** 全テストが通る（終了コード 0）ことを確認してからコミットする。
 - **終了コードを潰さない:** 結果を `| tail` や `| grep` に通さない。失敗しても後続が止まらなくなる。
-- **sample が無いとき:** 実データのテストは SKIP になる。合成データのテスト（75件）だけでも、座標変換・統合・系の自動判定・地域設定・単位・種別・srsName の主要な不具合は検出できる。sample があれば実データの12件も加わり、全87件になる。
+- **sample が無いとき:** 実データのテストは SKIP になる。合成データのテスト（84件）だけでも、座標変換・統合・系の自動判定・地域設定・単位・種別・srsName・度分秒の表示の主要な不具合は検出できる。sample があれば実データの13件も加わり、全97件になる。
 - **テストの環境:** テストは Windows に入っている .NET Framework 4.x の `csc`（C# 5）でビルドする。そのため、`tests/` の中では文字列補間（`$"..."`）や `?.` などの新しい書き方は使えない。`dem2mesh.cs` の `Math.Atanh` は、テスト用のコピーだけ `MathX.Atanh` に置き換える。
 
 ### 2. `dem2mesh.cs` を変えたら、`dem2mesh.gh` の中のコードも貼り直す
@@ -107,7 +108,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
 
 ## 現在の状況
 
-- **版:** README の更新履歴は Version 1.3（系の自動判定を地域メッシュの表に変更）。
+- **版:** README の更新履歴は Version 1.3.1（系の番号の範囲チェック、度分秒の表示の修正、LICENSE の追加）。
 - **リポジトリ:** 非公開。
 - **直近で入れたもの:** 系の自動判定の表と `tools/`、自動判定のテスト（代表47地点など）。
 
@@ -115,8 +116,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
 
 - **系を指定したときの確認:** `jgd_zone` を指定したとき、表で引いた系と違えば info で知らせるか。
 - **xml_data にファイルのパスを直接渡せるようにする:** Read File の Per Line オフや Flatten の手間をなくす。
-- **LICENSE ファイルがない:** README は MIT と書いている。
-- **info の度分秒で秒が 60.00 になる:** 繰り上がりの処理がない。
 - **Grasshopper のプレビューが重い:** 数十区画を超えると重くなる可能性がある。プレビューの描画時間は測れていない。
 - **`type_output` = 1 だとプレビューに何も出ない:** `dem2mesh.gh` では `type_meshes` のプレビューを切ってあるため。
 
@@ -148,6 +147,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
   - テスト：Units（仮の RhinoDoc で m・mm）。本物の Rhino でも確かめる。
 - **README の「結合すると境目が開いた辺になる」（誤り）:**
   - 型：仮の型での推測を、Rhino で確かめずに書いた。Rhino は同じ座標の頂点をつながりとして扱う。
+- **info の度分秒（Version 1.3.1 で修正）:**
+  - 不具合：分と秒を切り捨ててから秒を丸めていたので、139°50′00″ が `139°49'60.00"` と表示された。
+  - 型：丸めの前に切り捨てをすると、繰り上がりが抜ける。表示する最小の単位（1/100秒）で先に丸めてから、分・度に分ける。
+  - テスト：Dms。
+- **系の番号の範囲（Version 1.3.1 で修正）:**
+  - 不具合：`jgd_zone` が20以上だと、原点の表の範囲外になり、原因の分からない配列のエラーになった。
+  - 型：入力の範囲を確かめずに、配列の添字に使っていた。Grasshopper の Value List で防げていても、数値を直接つなぐ使い方がある。
+  - テスト：Errors。
 - **確認作業での失敗:**
   - Windows の `python` は Microsoft Store の案内で、実体がない。置き換えが行われていなかったのに気づかなかった。
   - perl で日本語を置き換えるときは `-Mutf8 -CSD` が要る。
