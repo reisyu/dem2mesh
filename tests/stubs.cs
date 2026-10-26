@@ -7,6 +7,22 @@ public class GH_ScriptInstance {}
 // .NET Framework 4.x には Math.Atanh がない。run_tests.ps1 がテスト用のコピーだけ MathX.Atanh に置き換える
 public static class MathX { public static double Atanh(double x) { return 0.5 * System.Math.Log((1 + x) / (1 - x)); } }
 
+namespace Rhino {
+  public enum UnitSystem { None, Millimeters, Centimeters, Meters, Kilometers }
+  // ActiveDoc は既定で null（文書なし → メートルのまま）。単位のテストだけが差し替える
+  public class RhinoDoc {
+    public static RhinoDoc ActiveDoc { get; set; }
+    public UnitSystem ModelUnitSystem { get; set; }
+  }
+  public static class RhinoMath {
+    static double PerMeter(UnitSystem u) {
+      switch (u) { case UnitSystem.Millimeters: return 1000; case UnitSystem.Centimeters: return 100; case UnitSystem.Kilometers: return 0.001; default: return 1; }
+    }
+    // from の 1 単位が to で何単位か
+    public static double UnitScale(UnitSystem from, UnitSystem to) { return PerMeter(to) / PerMeter(from); }
+  }
+}
+
 namespace Rhino.Geometry {
   // set = false が Point3d.Unset。無効な頂点（標高なし）も、この値のまま頂点リストに残る
   public struct Point3d {

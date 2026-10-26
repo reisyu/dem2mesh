@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Xml;
 using System.Linq;
+using System.Globalization;
 using System.Threading.Tasks;
+using Rhino;
 using Rhino.Geometry;
 
 public class Script_Instance : GH_ScriptInstance
@@ -34,7 +36,6 @@ public class Script_Instance : GH_ScriptInstance
         int sample_step,
         Point3d target_point,
         double size,
-        int mode,
         int type_output,
         ref object info,
         ref object output_mesh,
@@ -75,13 +76,19 @@ public class Script_Instance : GH_ScriptInstance
       double[] origin_lons = { 129.5, 131.0, 132.166666666667, 133.5, 134.333333333333, 136.0, 137.166666666667, 138.5, 139.833333333333, 140.833333333333, 140.25, 142.25, 144.25, 142.0, 127.5, 124.0, 131.0, 136.0, 154.0 };
       double phi0_deg = origin_lats[activeZone - 1];
       double lam0_deg = origin_lons[activeZone - 1];
+      Projection proj = new Projection(phi0_deg, lam0_deg);
 
+      // 座標はメートルで計算し、出力だけ Rhino の文書の単位に換算する
+      // target_point と size は文書の単位で入ってくるので、メートルに戻して比べる
+      string unitName;
+      double unit = ModelUnitScale(out unitName);
       bool doClipping = (target_point != Point3d.Unset && size > 0);
-      double half = size / 2.0;
+      double half = size / 2.0 / unit;
+      double clipE = target_point.X / unit, clipN = target_point.Y / unit;
       int step = Math.Max(1, sample_step);
 
       // クリッピング範囲にかからない区画は標高を読まずに飛ばす
-      List<Tile> used = doClipping ? tiles.Where(t => TouchesClip(t, phi0_deg, lam0_deg, target_point, half)).ToList() : tiles;
+      List<Tile> used = doClipping ? tiles.Where(t => TouchesClip(t, proj, clipE, clipN, half)).ToList() : tiles;
       if (used.Count == 0) {
         info = "クリッピング範囲にかかる区画がありません。";
         return;
@@ -126,14 +133,13 @@ public class Script_Instance : GH_ScriptInstance
           double lon = lLon + (c + 0.5) * cellLon;
           double pX, pY;
 
-          // mode 1, 2 では 6次展開(Exact) を使用
-          if (mode == 0) LatLonToJGD_Fast(lat, lon, phi0_deg, lam0_deg, out pX, out pY);
-          else LatLonToJGD_Exact(lat, lon, phi0_deg, lam0_deg, out pX, out pY);
+          proj.Compute(lat, lon, out pX, out pY);
 
+          // 平面直角座標の X は北、Y は東。Rhino では東を X、北を Y にする
           int idx = rIdx * nX + cIdx;
-          if (!doClipping || (Math.Abs(pY - target_point.X) <= half && Math.Abs(pX - target_point.Y) <= half)) {
-            float z = (mode == 2) ? GetBilinearHeight(c, r, heights, orig_nx, orig_ny) : GetRawHeight(c, r, heights, orig_nx, orig_ny);
-            if (z > -9000) { verts[idx] = new Point3d(pY, pX, z); isValid[idx] = true; vType[idx] = types[r * orig_nx + c]; }
+          if (!doClipping || (Math.Abs(pY - clipE) <= half && Math.Abs(pX - clipN) <= half)) {
+            float z = GetRawHeight(c, r, heights, orig_nx, orig_ny);
+            if (z > -9000) { verts[idx] = new Point3d(pY * unit, pX * unit, z * unit); isValid[idx] = true; vType[idx] = types[r * orig_nx + c]; }
           }
         }
       });
@@ -211,7 +217,7 @@ public class Script_Instance : GH_ScriptInstance
       log.Add(string.Format(" Origin Lat: {0} ({1})", ToDMS(phi0_deg), phi0_deg));
       log.Add(string.Format(" Origin Lon: {0} ({1})", ToDMS(lam0_deg), lam0_deg));
 
-      log.Add(" Mode: " + (mode == 2 ? "High (6th Order + Bilinear)" : (mode == 1 ? "Standard (6th Order)" : "Fast (3rd Order)")));
+      log.Add(string.Format(" Units: {0} (1 m = {1} units)", unitName, unit.ToString("G", CultureInfo.InvariantCulture)));
       log.Add(string.Format(" Output Mesh: {0}x{1} pts, {2} faces", nX, nY, faceCount));
       log.Add(" Type Output: " + (type_output >= 2 ? "Split by Type + Joined" : (type_output == 1 ? "Split by Type" : "Single Mesh")));
       if (type_output > 0) {
@@ -261,18 +267,18 @@ public class Script_Instance : GH_ScriptInstance
 
     string[] lcParts = SplitSpaces(ReadNode(t, "gml:lowerCorner"));
     string[] ucParts = SplitSpaces(ReadNode(t, "gml:upperCorner"));
-    t.lLat = double.Parse(lcParts[0]); t.lLon = double.Parse(lcParts[1]);
-    t.uLat = double.Parse(ucParts[0]); t.uLon = double.Parse(ucParts[1]);
+    t.lLat = ParseDouble(lcParts[0]); t.lLon = ParseDouble(lcParts[1]);
+    t.uLat = ParseDouble(ucParts[0]); t.uLon = ParseDouble(ucParts[1]);
 
     string[] hiParts = SplitSpaces(ReadNode(t, "gml:high"));
-    t.nx = int.Parse(hiParts[0]) + 1;
-    t.ny = int.Parse(hiParts[1]) + 1;
+    t.nx = ParseInt(hiParts[0]) + 1;
+    t.ny = ParseInt(hiParts[1]) + 1;
 
     int startX = 0, startY = 0;
     XmlNode sn = t.doc.SelectSingleNode(".//gml:startPoint", t.ns);
     if (sn != null) {
       string[] sParts = SplitSpaces(sn.InnerText);
-      startX = int.Parse(sParts[0]); startY = int.Parse(sParts[1]);
+      startX = ParseInt(sParts[0]); startY = ParseInt(sParts[1]);
     }
     t.offset = startY * t.nx + startX;
     return t;
@@ -285,7 +291,7 @@ public class Script_Instance : GH_ScriptInstance
     for (int i = 0; i < lines.Length && t.offset + i < total; i++) {
       string[] p = lines[i].Split(',');
       float z;
-      if (!float.TryParse(p.Length >= 2 ? p[1] : p[0], out z) || z <= -9000) continue;
+      if (!float.TryParse(p.Length >= 2 ? p[1] : p[0], NumberStyles.Float, CultureInfo.InvariantCulture, out z) || z <= -9000) continue;
       int k = t.offset + i;
       int gIdx = (row0 + k / t.nx) * gnx + col0 + k % t.nx;
       if (grid[gIdx] > -9000) continue; // 区画が重なる場合は先に読んだ値を優先
@@ -330,66 +336,87 @@ public class Script_Instance : GH_ScriptInstance
   }
   private string[] SplitSpaces(string s) { return s.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries); }
 
-  // 区画の四隅を投影した範囲がクリッピング範囲にかかるか
-  private bool TouchesClip(Tile t, double phi0_deg, double lam0_deg, Point3d tp, double half) {
+  // GMLの数値は常に「.」が小数点。PC の地域設定（ドイツ語なら「,」）に左右されないように読む
+  private static double ParseDouble(string s) { return double.Parse(s, NumberStyles.Float, CultureInfo.InvariantCulture); }
+  private static int ParseInt(string s) { return int.Parse(s, NumberStyles.Integer, CultureInfo.InvariantCulture); }
+
+  // 区画の四隅を投影した範囲がクリッピング範囲にかかるか（すべてメートル）
+  private bool TouchesClip(Tile t, Projection proj, double clipE, double clipN, double half) {
     double minE = double.MaxValue, maxE = double.MinValue, minN = double.MaxValue, maxN = double.MinValue;
     foreach (double lat in new[] { t.lLat, t.uLat }) {
       foreach (double lon in new[] { t.lLon, t.uLon }) {
         double pX, pY;
-        LatLonToJGD_Exact(lat, lon, phi0_deg, lam0_deg, out pX, out pY);
+        proj.Compute(lat, lon, out pX, out pY);
         minN = Math.Min(minN, pX); maxN = Math.Max(maxN, pX);
         minE = Math.Min(minE, pY); maxE = Math.Max(maxE, pY);
       }
     }
     const double margin = 1.0; // 区画の辺のわずかな曲がりの分
-    return maxE + margin >= tp.X - half && minE - margin <= tp.X + half && maxN + margin >= tp.Y - half && minN - margin <= tp.Y + half;
+    return maxE + margin >= clipE - half && minE - margin <= clipE + half && maxN + margin >= clipN - half && minN - margin <= clipN + half;
   }
 
-  // --- 高精度座標変換ロジック (国土地理院 測量計算規則 準拠) ---
-  private void LatLonToJGD_Exact(double lat, double lon, double lat0, double lon0, out double X, out double Y) { ComputeJGD(lat, lon, lat0, lon0, 6, out X, out Y); }
-  private void LatLonToJGD_Fast(double lat, double lon, double lat0, double lon0, out double X, out double Y) { ComputeJGD(lat, lon, lat0, lon0, 3, out X, out Y); }
+  // メートルから Rhino の文書の単位への倍率（文書がなければメートルのまま）
+  private static double ModelUnitScale(out string unitName) {
+    RhinoDoc doc = RhinoDoc.ActiveDoc;
+    if (doc == null) { unitName = "Meters (no document)"; return 1.0; }
+    unitName = doc.ModelUnitSystem.ToString();
+    return RhinoMath.UnitScale(UnitSystem.Meters, doc.ModelUnitSystem);
+  }
 
-  private void ComputeJGD(double lat_deg, double lon_deg, double phi0_deg, double lam0_deg, int order, out double X, out double Y) {
-    double phi = lat_deg * Math.PI / 180.0; double lam = lon_deg * Math.PI / 180.0;
-    double phi0 = phi0_deg * Math.PI / 180.0; double lam0 = lam0_deg * Math.PI / 180.0;
+  // --- 座標変換（国土地理院 測量計算規則のガウス・クリューゲル図法、6次展開） ---
+  // 国土地理院の測量計算サイト（bl2xy）と 0.05 mm 以内で一致することを確かめてある
+  // 楕円体（GRS80）と原点で決まる値はコンストラクタで1回だけ計算し、点ごとには緯度経度で変わる部分だけを計算する
+  // （点ごとに係数を計算し直していたときは、6次が3次の約2.7倍遅かった）
+  private class Projection {
+    private readonly double[] alpha = new double[7];
+    private readonly double am0, s0m0, e, lam0;
 
-    double a = 6378137.0; double f = 1.0 / 298.257222101; double m0 = 0.9999;
-    double n = f / (2.0 - f);
-    double a_bar = (a / (1.0 + n)) * (1.0 + 0.25 * n * n + (1.0/64.0) * Math.Pow(n, 4) + (1.0/256.0) * Math.Pow(n, 6));
+    public Projection(double phi0_deg, double lam0_deg) {
+      const double a = 6378137.0, f = 1.0 / 298.257222101, m0 = 0.9999;
+      double n = f / (2.0 - f);
+      double n2 = n * n, n3 = n2 * n, n4 = n3 * n, n5 = n4 * n, n6 = n5 * n;
+      am0 = (a / (1.0 + n)) * (1.0 + n2 / 4.0 + n4 / 64.0 + n6 / 256.0) * m0;
 
-    // 6次展開係数
-    double[] alpha = new double[7];
-    alpha[1] = 1.0/2.0*n - 2.0/3.0*n*n + 5.0/16.0*Math.Pow(n,3) + 41.0/180.0*Math.Pow(n,4) - 127.0/288.0*Math.Pow(n,5) + 7891.0/37800.0*Math.Pow(n,6);
-    alpha[2] = 13.0/48.0*n*n - 3.0/5.0*n*n*n + 557.0/1440.0*Math.Pow(n,4) + 281.0/630.0*Math.Pow(n,5) - 1983433.0/1935360.0*Math.Pow(n,6);
-    alpha[3] = 61.0/240.0*Math.Pow(n,3) - 103.0/140.0*Math.Pow(n,4) + 15061.0/26880.0*Math.Pow(n,5) + 167603.0/181440.0*Math.Pow(n,6);
-    alpha[4] = 49561.0/161280.0*Math.Pow(n,4) - 179.0/168.0*Math.Pow(n,5) + 6601661.0/7257600.0*Math.Pow(n,6);
-    alpha[5] = 34729.0/80640.0*Math.Pow(n,5) - 3418889.0/1995840.0*Math.Pow(n,6);
-    alpha[6] = 212378941.0/319334400.0*Math.Pow(n,6);
+      alpha[1] = 1.0/2.0*n - 2.0/3.0*n2 + 5.0/16.0*n3 + 41.0/180.0*n4 - 127.0/288.0*n5 + 7891.0/37800.0*n6;
+      alpha[2] = 13.0/48.0*n2 - 3.0/5.0*n3 + 557.0/1440.0*n4 + 281.0/630.0*n5 - 1983433.0/1935360.0*n6;
+      alpha[3] = 61.0/240.0*n3 - 103.0/140.0*n4 + 15061.0/26880.0*n5 + 167603.0/181440.0*n6;
+      alpha[4] = 49561.0/161280.0*n4 - 179.0/168.0*n5 + 6601661.0/7257600.0*n6;
+      alpha[5] = 34729.0/80640.0*n5 - 3418889.0/1995840.0*n6;
+      alpha[6] = 212378941.0/319334400.0*n6;
+      e = 2.0 * Math.Sqrt(n) / (1.0 + n);
 
-    double dlh = lam - lam0;
-    double e_tmp = 2.0 * Math.Sqrt(n) / (1.0 + n);
-    double t = Math.Sinh(Math.Atanh(Math.Sin(phi)) - e_tmp * Math.Atanh(e_tmp * Math.Sin(phi)));
-    double xi_p = Math.Atan(t / Math.Cos(dlh));
-    double eta_p = Math.Atanh(Math.Sin(dlh) / Math.Sqrt(1.0 + t * t));
-
-    double sX = 0, sE = 0;
-    for (int j = 1; j <= order; j++) {
-      sX += alpha[j] * Math.Sin(2 * j * xi_p) * Math.Cosh(2 * j * eta_p);
-      sE += alpha[j] * Math.Cos(2 * j * xi_p) * Math.Sinh(2 * j * eta_p);
+      // 原点の子午線弧長 S0
+      double phi0 = phi0_deg * Math.PI / 180.0;
+      lam0 = lam0_deg * Math.PI / 180.0;
+      double A0 = 1.0 + n2/4.0 + n4/64.0 + n6/256.0;
+      double A1 = -3.0/2.0*(n - n3/8.0 - n5/64.0);
+      double A2 = 15.0/16.0*(n2 - n4/4.0 - n6/16.0);
+      double A3 = -35.0/48.0*(n3 - 5.0/16.0*n5);
+      double A4 = 315.0/512.0*(n4 - n6/3.0);
+      double A5 = -693.0/1280.0*n5;
+      double A6 = 1001.0/2048.0*n6;
+      s0m0 = (a / (1.0 + n)) * (A0*phi0 + A1*Math.Sin(2*phi0) + A2*Math.Sin(4*phi0) + A3*Math.Sin(6*phi0) + A4*Math.Sin(8*phi0) + A5*Math.Sin(10*phi0) + A6*Math.Sin(12*phi0)) * m0;
     }
-    X = a_bar * m0 * (xi_p + sX); Y = a_bar * m0 * (eta_p + sE);
 
-    // 子午線弧長 S0 (高精度版)
-    double A0 = 1.0 + 1.0/4.0*n*n + 1.0/64.0*Math.Pow(n,4) + 1.0/256.0*Math.Pow(n,6);
-    double A1 = -3.0/2.0*(n - 1.0/8.0*Math.Pow(n,3) - 1.0/64.0*Math.Pow(n,5));
-    double A2 = 15.0/16.0*(n*n - 1.0/4.0*Math.Pow(n,4) - 1.0/16.0*Math.Pow(n,6));
-    double A3 = -35.0/48.0*(Math.Pow(n,3) - 5.0/16.0*Math.Pow(n,5));
-    double A4 = 315.0/512.0*(Math.Pow(n,4) - 1.0/3.0*Math.Pow(n,6));
-    double A5 = -693.0/1280.0*Math.Pow(n,5);
-    double A6 = 1001.0/2048.0*Math.Pow(n,6);
+    // 緯度経度（度）→ 平面直角座標（メートル。X は北向き、Y は東向き）
+    public void Compute(double lat_deg, double lon_deg, out double X, out double Y) {
+      double phi = lat_deg * Math.PI / 180.0, dlh = lon_deg * Math.PI / 180.0 - lam0, sp = Math.Sin(phi);
+      double t = Math.Sinh(Math.Atanh(sp) - e * Math.Atanh(e * sp));
+      double xi = Math.Atan(t / Math.Cos(dlh));
+      double eta = Math.Atanh(Math.Sin(dlh) / Math.Sqrt(1.0 + t * t));
 
-    double s0 = (a / (1.0 + n)) * (A0*phi0 + A1*Math.Sin(2*phi0) + A2*Math.Sin(4*phi0) + A3*Math.Sin(6*phi0) + A4*Math.Sin(8*phi0) + A5*Math.Sin(10*phi0) + A6*Math.Sin(12*phi0));
-    X -= s0 * m0;
+      // sin/cos(2jξ)・sinh/cosh(2jη) は加法定理の漸化式で求め、三角関数・双曲線関数の呼び出しを各1回にする
+      double s1 = Math.Sin(2 * xi), c1 = Math.Cos(2 * xi), sh1 = Math.Sinh(2 * eta), ch1 = Math.Cosh(2 * eta);
+      double s = s1, c = c1, sh = sh1, ch = ch1, sX = 0, sE = 0;
+      for (int j = 1; j <= 6; j++) {
+        sX += alpha[j] * s * ch;
+        sE += alpha[j] * c * sh;
+        double sNext = s * c1 + c * s1, cNext = c * c1 - s * s1, shNext = sh * ch1 + ch * sh1, chNext = ch * ch1 + sh * sh1;
+        s = sNext; c = cNext; sh = shNext; ch = chNext;
+      }
+      X = am0 * (xi + sX) - s0m0;
+      Y = am0 * (eta + sE);
+    }
   }
 
   private string ToDMS(double dd) {
@@ -405,14 +432,5 @@ public class Script_Instance : GH_ScriptInstance
   private float GetRawHeight(int c, int r, float[] grid, int nx, int ny) {
     if (c < 0 || c >= nx || r < 0 || r >= ny) return NoData;
     return grid[r * nx + c];
-  }
-  private float GetBilinearHeight(double c, double r, float[] grid, int nx, int ny) {
-    int c0 = (int)Math.Floor(c); int r0 = (int)Math.Floor(r);
-    int c1 = Math.Min(c0 + 1, nx - 1); int r1 = Math.Min(r0 + 1, ny - 1);
-    float z00 = GetRawHeight(c0, r0, grid, nx, ny); float z10 = GetRawHeight(c1, r0, grid, nx, ny);
-    float z01 = GetRawHeight(c0, r1, grid, nx, ny); float z11 = GetRawHeight(c1, r1, grid, nx, ny);
-    if (z00 < -9000) return NoData;
-    double dc = c - c0, dr = r - r0;
-    return (float)(z00 * (1 - dc) * (1 - dr) + z10 * dc * (1 - dr) + z01 * (1 - dc) * dr + z11 * dc * dr);
   }
 }

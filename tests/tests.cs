@@ -6,9 +6,12 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Globalization;
 using System.Diagnostics;
 using System.Reflection;
 using System.Collections.Generic;
+using Rhino;
 using Rhino.Geometry;
 
 public static class Tests {
@@ -24,7 +27,7 @@ public static class Tests {
 
   static List<string> Lines(object[] a) { var l = a[6] as List<string>; return l ?? new List<string> { G.Info(a) }; }
   static string Line(object[] a, string key) { return Lines(a).FirstOrDefault(s => s.Contains(key)) ?? ""; }
-  static string K(Point3d p) { return string.Format("{0:F3},{1:F3},{2:F2}", p.X, p.Y, p.Z); }
+  static string K(Point3d p) { return string.Format(CultureInfo.InvariantCulture, "{0:F3},{1:F3},{2:F2}", p.X, p.Y, p.Z); }
   // 面を「4頂点の座標」で表した一覧（頂点番号に依存しない比較用）
   static List<string> FaceKeys(Mesh m) {
     var keys = m.Faces.F.Select(f => string.Join("|", f.Select(i => K(m.Vertices.P[i])))).ToList();
@@ -32,15 +35,30 @@ public static class Tests {
     return keys;
   }
 
+  // dem2mesh.cs の中の Projection（座標変換）を作って呼ぶ
+  static Func<double, double, Point3d> Projector(double phi0, double lam0) {
+    var type = typeof(Script_Instance).GetNestedType("Projection", BindingFlags.NonPublic);
+    object proj = Activator.CreateInstance(type, new object[] { phi0, lam0 });
+    var compute = type.GetMethod("Compute");
+    return (lat, lon) => {
+      object[] p = { lat, lon, 0.0, 0.0 };
+      compute.Invoke(proj, p);
+      return new Point3d((double)p[3], (double)p[2], 0); // Rhino と同じく 東 = X、北 = Y
+    };
+  }
+
   public static int Main(string[] args) {
     Console.OutputEncoding = Encoding.UTF8;
     string sample = args.Length > 0 && args[0] != "" ? args[0] : null;
 
+    ProjectionAccuracy();
     CellCenter();
     MergeTiles();
     Clipping();
     Errors();
     Zones();
+    Culture();
+    Units();
     TypeSplit();
     SrsName();
     RealData(sample);
@@ -50,18 +68,34 @@ public static class Tests {
     return fail == 0 ? 0 : 1;
   }
 
+  // 国土地理院 測量計算サイトの「緯度経度 → 平面直角座標」（bl2xy、refFrame=2）の結果と照合する
+  // 国土地理院の値は 0.1 mm 単位なので、差が 0.2 mm 以内なら一致とみなす
+  static void ProjectionAccuracy() {
+    Section("合成: 座標変換と国土地理院の計算値");
+    double[] oLat = { 33, 33, 36, 33, 36, 36, 36, 36, 36, 40, 44, 44, 44, 26, 26, 26, 26, 20, 26 };
+    double[] oLon = { 129.5, 131, 132 + 10 / 60.0, 133.5, 134 + 20 / 60.0, 136, 137 + 10 / 60.0, 138.5, 139 + 50 / 60.0, 140 + 50 / 60.0,
+                      140.25, 142.25, 144.25, 142, 127.5, 124, 131, 136, 154 };
+    // { 系, 緯度, 経度, 国土地理院の X（北）, Y（東） }
+    double[][] gsi = {
+      new[] { 3,  34.4708333333, 132.40625, -169610.2556,  22008.8113 },
+      new[] { 9,  35.73,         140.85,     -29478.7323,  91970.2099 },
+      new[] { 12, 43.06,         141.35,    -104033.3164, -73308.3018 },
+      new[] { 13, 43.33,         145.58,     -73574.2880, 107857.0969 },
+      new[] { 16, 24.47,         123.0,     -169104.5470, -101372.0871 } };
+    foreach (var g in gsi) {
+      int z = (int)g[0];
+      var p = Projector(oLat[z - 1], oLon[z - 1])(g[1], g[2]);
+      double d = Math.Max(Math.Abs(p.Y - g[3]), Math.Abs(p.X - g[4]));
+      Check(z + "系 北緯" + g[1].ToString("F2") + "° 東経" + g[2].ToString("F2") + "° が国土地理院の値と一致", d < 0.0002, "差 " + (d * 1000).ToString("F3") + " mm");
+    }
+  }
+
   // 標高点はセルの中心にある（範囲の端ではない）。半セルずれの再発防止
   static void CellCenter() {
     Section("合成: 標高点の位置（セルの中心）");
-    var a = G.Run(G.Tile(0, 0, 5, 4, 4), 1, Point3d.Unset, 0, 1);
+    var a = G.Run(G.Tile(0, 0, 5, 4, 4), 1, Point3d.Unset, 0);
     var P = ((Mesh)a[7]).Vertices.P;
-    var s = new Script_Instance();
-    var cj = typeof(Script_Instance).GetMethod("ComputeJGD", BindingFlags.NonPublic | BindingFlags.Instance);
-    Func<double, double, Point3d> proj = (lat, lon) => {
-      object[] p = { lat, lon, 36.0, 139.833333333333, 6, 0.0, 0.0 };
-      cj.Invoke(s, p);
-      return new Point3d((double)p[6], (double)p[5], 0);
-    };
+    var proj = Projector(36.0, 139.833333333333);
     double uLat = G.Lat0 + 4 * G.D, lLon = G.Lon0, lLat = G.Lat0, uLon = G.Lon0 + 5 * G.D;
     Point3d first = proj(uLat - G.D / 2, lLon + G.D / 2), last = proj(lLat + G.D / 2, uLon - G.D / 2);
     double d1 = Math.Max(Math.Abs(P[0].X - first.X), Math.Abs(P[0].Y - first.Y));
@@ -77,15 +111,14 @@ public static class Tests {
     string big = G.Tile(0, 0, 10, 8, 8);
     // 4区画に分け、順番もばらばらにする
     var parts = new List<string> { G.Tile(5, 4, 5, 4, 8), G.Tile(0, 0, 5, 4, 8), G.Tile(5, 0, 5, 4, 8), G.Tile(0, 4, 5, 4, 8) };
-    foreach (int mode in new[] { 0, 1, 2 })
-      foreach (int step in new[] { 1, 2, 3 })
-        Check("2×2区画 = 1区画（mode " + mode + ", step " + step + "）", G.Dump(G.Run(parts, step, Point3d.Unset, 0, mode)) == G.Dump(G.Run(big, step, Point3d.Unset, 0, mode)));
-    var a = G.Run(parts, 1, Point3d.Unset, 0, 1);
+    foreach (int step in new[] { 1, 2, 3 })
+      Check("2×2区画 = 1区画（step " + step + "）", G.Dump(G.Run(parts, step, Point3d.Unset, 0)) == G.Dump(G.Run(big, step, Point3d.Unset, 0)));
+    var a = G.Run(parts, 1, Point3d.Unset, 0);
     Check("面の数にすき間がない（9×7 = 63）", ((Mesh)a[7]).Faces.Count == 63, ((Mesh)a[7]).Faces.Count + " 面");
-    var b = G.Run(new List<string> { parts[0], parts[1], parts[2] }, 1, Point3d.Unset, 0, 1);
+    var b = G.Run(new List<string> { parts[0], parts[1], parts[2] }, 1, Point3d.Unset, 0);
     Check("1区画欠けたL字（欠けた部分だけ面がない）", ((Mesh)b[7]).Faces.Count == 9 * 3 + 4 * 4, ((Mesh)b[7]).Faces.Count + " 面");
     // 先頭・末尾が省略された区画（startPoint）
-    var c = G.Run(G.Tile(0, 0, 10, 8, 8, 7, 70), 1, Point3d.Unset, 0, 1);
+    var c = G.Run(G.Tile(0, 0, 10, 8, 8, 7, 70), 1, Point3d.Unset, 0);
     var P = ((Mesh)c[7]).Vertices.P;
     Check("先頭7点・末尾3点の省略が正しい位置に入る", !P[6].set && P[7].set && Math.Abs(P[7].Z - 107) < 1e-6 && P[76].set && !P[77].set);
   }
@@ -94,26 +127,26 @@ public static class Tests {
     Section("合成: クリッピング");
     string big = G.Tile(0, 0, 10, 8, 8);
     var parts = new List<string> { G.Tile(5, 4, 5, 4, 8), G.Tile(0, 0, 5, 4, 8), G.Tile(5, 0, 5, 4, 8), G.Tile(0, 4, 5, 4, 8) };
-    var bm = (Mesh)G.Run(big, 1, Point3d.Unset, 0, 1)[7];
+    var bm = (Mesh)G.Run(big, 1, Point3d.Unset, 0)[7];
     var p = bm.Vertices.P[6 * 10 + 7];
-    var c = G.Run(parts, 1, new Point3d(p.X, p.Y, 0), 8, 1);
+    var c = G.Run(parts, 1, new Point3d(p.X, p.Y, 0), 8);
     Check("範囲が1区画の中だけなら、その区画だけ読む", Line(c, "Tiles:").Contains("1 used / 4 loaded"), Line(c, "Tiles:").Trim());
     var q = bm.Vertices.P[4 * 10 + 5];
-    var e = G.Run(parts, 1, new Point3d(q.X, q.Y, 0), 14, 1);
-    var eBig = G.Run(big, 1, new Point3d(q.X, q.Y, 0), 14, 1);
+    var e = G.Run(parts, 1, new Point3d(q.X, q.Y, 0), 14);
+    var eBig = G.Run(big, 1, new Point3d(q.X, q.Y, 0), 14);
     Check("区画の境目をまたぐ切り抜き = 1区画で切り抜いた結果", FaceKeys((Mesh)e[7]).SequenceEqual(FaceKeys((Mesh)eBig[7])) && ((Mesh)e[7]).Faces.Count > 0);
-    Check("範囲にかかる区画がないとき", G.Info(G.Run(parts, 1, new Point3d(0, 0, 0), 10, 1)).Contains("クリッピング範囲にかかる区画がありません"));
+    Check("範囲にかかる区画がないとき", G.Info(G.Run(parts, 1, new Point3d(0, 0, 0), 10)).Contains("クリッピング範囲にかかる区画がありません"));
   }
 
   static void Errors() {
     Section("合成: 入力の誤り");
     string t = G.Tile(0, 0, 5, 4, 8);
-    Check("セルの大きさが違う区画", G.Info(G.Run(new List<string> { t, G.Tile(0, 0, 5, 4, 8, 0, -1, G.D * 2) }, 1, Point3d.Unset, 0, 1)).Contains("区画 2 のセルの大きさが区画 1 と違います"));
+    Check("セルの大きさが違う区画", G.Info(G.Run(new List<string> { t, G.Tile(0, 0, 5, 4, 8, 0, -1, G.D * 2) }, 1, Point3d.Unset, 0)).Contains("区画 2 のセルの大きさが区画 1 と違います"));
     G.Lat0 += G.D * 0.5; string shifted = G.Tile(0, 0, 5, 4, 8); G.Lat0 -= G.D * 0.5;
-    Check("格子がずれた区画", G.Info(G.Run(new List<string> { t, shifted }, 1, Point3d.Unset, 0, 1)).Contains("区画 2 の格子が区画 1 の格子と揃っていません"));
-    Check("要素が足りないGML", G.Info(G.Run(new List<string> { t, "<r xmlns:gml='http://www.opengis.net/gml/3.2'></r>" }, 1, Point3d.Unset, 0, 1)).Contains("区画 2: gml:lowerCorner が見つかりません"));
-    Check("空の入力", G.Info(G.Run(new List<string> { "", null }, 1, Point3d.Unset, 0, 1)).StartsWith("Wait:"));
-    Check("離れすぎた区画", G.Info(G.Run(new List<string> { t, G.Tile(80000, -27000, 5, 4, 8) }, 1, Point3d.Unset, 0, 1)).Contains("範囲が広すぎます"));
+    Check("格子がずれた区画", G.Info(G.Run(new List<string> { t, shifted }, 1, Point3d.Unset, 0)).Contains("区画 2 の格子が区画 1 の格子と揃っていません"));
+    Check("要素が足りないGML", G.Info(G.Run(new List<string> { t, "<r xmlns:gml='http://www.opengis.net/gml/3.2'></r>" }, 1, Point3d.Unset, 0)).Contains("区画 2: gml:lowerCorner が見つかりません"));
+    Check("空の入力", G.Info(G.Run(new List<string> { "", null }, 1, Point3d.Unset, 0)).StartsWith("Wait:"));
+    Check("離れすぎた区画", G.Info(G.Run(new List<string> { t, G.Tile(80000, -27000, 5, 4, 8) }, 1, Point3d.Unset, 0)).Contains("範囲が広すぎます"));
   }
 
   // 告示（平成14年国土交通省告示第9号）の原点が、各系で (0, 0) になる。11系・12系の原点緯度の誤りの再発防止
@@ -126,12 +159,57 @@ public static class Tests {
     for (int z = 1; z <= 19; z++) {
       // 原点が区画の (列2, 行2) のセルの中心に来るように区画を置く
       G.Lat0 = oLat[z - 1] - 2.5 * G.D; G.Lon0 = oLon[z - 1] - 2.5 * G.D;
-      var a = G.Call(G.Tile(0, 0, 5, 5, 5), z, 1, Point3d.Unset, 0, 1, 0);
+      var a = G.Call(G.Tile(0, 0, 5, 5, 5), z, 1, Point3d.Unset, 0, 0);
       var p = ((Mesh)a[7]).Vertices.P[2 * 5 + 2];
       double d = Math.Max(Math.Abs(p.X), Math.Abs(p.Y));
       Check(z + "系の原点が (0, 0)", d < 0.01, "ずれ " + d.ToString("F4") + " m");
     }
     G.Lat0 = lat0; G.Lon0 = lon0;
+  }
+
+  // PC の地域設定（小数点が「,」の言語など）に左右されない
+  static void Culture() {
+    Section("合成: 地域設定");
+    var original = Thread.CurrentThread.CurrentCulture;
+    string t = G.Tile(0, 0, 5, 4, 4);
+    Thread.CurrentThread.CurrentCulture = new CultureInfo("ja-JP");
+    var baseKeys = FaceKeys((Mesh)G.Run(t, 1, Point3d.Unset, 0)[7]);
+    foreach (var name in new[] { "de-DE", "fr-FR", "ru-RU" }) {
+      Thread.CurrentThread.CurrentCulture = new CultureInfo(name);
+      var a = G.Run(t, 1, Point3d.Unset, 0);
+      var m = a[7] as Mesh;
+      Check(name + " でも日本語の設定と同じメッシュになる", m != null && FaceKeys(m).SequenceEqual(baseKeys), m == null ? G.Info(a).Split('\n')[0] : null);
+    }
+    Thread.CurrentThread.CurrentCulture = original;
+  }
+
+  // 出力は Rhino の文書の単位に換算する。target_point と size も文書の単位で受ける
+  static void Units() {
+    Section("合成: Rhino の文書の単位");
+    string big = G.Tile(0, 0, 10, 8, 8);
+    try {
+      RhinoDoc.ActiveDoc = null;
+      var none = G.Run(big, 1, Point3d.Unset, 0);
+      Check("文書がないときはメートルのまま", Line(none, "Units:").Contains("Meters (no document)"), Line(none, "Units:").Trim());
+      RhinoDoc.ActiveDoc = new RhinoDoc { ModelUnitSystem = UnitSystem.Meters };
+      var m = G.Run(big, 1, Point3d.Unset, 0);
+      RhinoDoc.ActiveDoc = new RhinoDoc { ModelUnitSystem = UnitSystem.Millimeters };
+      var mm = G.Run(big, 1, Point3d.Unset, 0);
+      var Pm = ((Mesh)m[7]).Vertices.P; var Pmm = ((Mesh)mm[7]).Vertices.P;
+      double maxd = 0;
+      for (int i = 0; i < Pm.Count; i++) maxd = Math.Max(maxd, Math.Max(Math.Abs(Pm[i].X * 1000 - Pmm[i].X), Math.Max(Math.Abs(Pm[i].Y * 1000 - Pmm[i].Y), Math.Abs(Pm[i].Z * 1000 - Pmm[i].Z))));
+      Check("ミリメートルの文書では X・Y・Z がすべて1000倍", maxd < 1e-3, "最大差 " + maxd.ToString("E1") + " mm");
+      Check("info に単位が出る", Line(mm, "Units:").Contains("Millimeters") && Line(mm, "Units:").Contains("1000"), Line(mm, "Units:").Trim());
+      // 切り抜きの中心と大きさも文書の単位で渡す
+      var q = Pm[4 * 10 + 5];
+      RhinoDoc.ActiveDoc = new RhinoDoc { ModelUnitSystem = UnitSystem.Meters };
+      int facesM = ((Mesh)G.Run(big, 1, new Point3d(q.X, q.Y, 0), 14)[7]).Faces.Count;
+      RhinoDoc.ActiveDoc = new RhinoDoc { ModelUnitSystem = UnitSystem.Millimeters };
+      int facesMm = ((Mesh)G.Run(big, 1, new Point3d(q.X * 1000, q.Y * 1000, 0), 14000)[7]).Faces.Count;
+      Check("切り抜きも文書の単位で同じ範囲になる", facesM == facesMm && facesM > 0, "m: " + facesM + " 面 / mm: " + facesMm + " 面");
+    } finally {
+      RhinoDoc.ActiveDoc = null;
+    }
   }
 
   // 種別ごとのメッシュ（type_output 1, 2）
@@ -152,9 +230,9 @@ public static class Tests {
     Func<int, int, string> kind = (c, r) => (c == r || c == r + 1 || c == 13) ? "内水面" : "地表面";
     string tile = G.Tile(0, 0, 16, 12, 12, 0, -1, G.D, null, kind);
     foreach (int step in new[] { 1, 3 }) {
-      var a0 = G.Call(tile, 9, step, Point3d.Unset, 0, 1, 0);
-      var a1 = G.Call(tile, 9, step, Point3d.Unset, 0, 1, 1);
-      var a2 = G.Call(tile, 9, step, Point3d.Unset, 0, 1, 2);
+      var a0 = G.Call(tile, 9, step, Point3d.Unset, 0, 0);
+      var a1 = G.Call(tile, 9, step, Point3d.Unset, 0, 1);
+      var a2 = G.Call(tile, 9, step, Point3d.Unset, 0, 2);
       var single = FaceKeys((Mesh)a0[7]);
       var parts = (List<Mesh>)a1[8];
       var union = parts.SelectMany(m => FaceKeys(m)).ToList(); union.Sort(StringComparer.Ordinal);
@@ -164,7 +242,7 @@ public static class Tests {
       Check("type_output 1 では output_mesh が空" + tag, a1[7] == null);
       Check("頂点ごとに色が付く" + tag, parts.All(m => m.VertexColors.C.Count == m.Vertices.Count) && ((Mesh)a2[7]).VertexColors.C.Count == ((Mesh)a2[7]).Vertices.Count);
     }
-    var names = (List<string>)G.Call(tile, 9, 1, Point3d.Unset, 0, 1, 1)[9];
+    var names = (List<string>)G.Call(tile, 9, 1, Point3d.Unset, 0, 1)[9];
     Check("1セル幅の水路も内水面として残る", names.Contains("内水面") && names.Contains("地表面"), string.Join(", ", names));
   }
 
@@ -173,22 +251,22 @@ public static class Tests {
     string a24 = G.Tile(0, 0, 5, 4, 8, 0, -1, G.D, "fguuid:jgd2024.bl");
     string b24 = G.Tile(5, 0, 5, 4, 8, 0, -1, G.D, "fguuid:jgd2024.bl");
     string b11 = G.Tile(5, 0, 5, 4, 8, 0, -1, G.D, "fguuid:jgd2011.bl");
-    var same = G.Run(new List<string> { a24, b24 }, 1, Point3d.Unset, 0, 1);
+    var same = G.Run(new List<string> { a24, b24 }, 1, Point3d.Unset, 0);
     Check("表記がそろっていれば警告なし", !Lines(same)[0].StartsWith("Warning") && Line(same, "[2]").Contains("fguuid:jgd2024.bl"));
-    var mixed = G.Run(new List<string> { a24, b11 }, 1, Point3d.Unset, 0, 1);
+    var mixed = G.Run(new List<string> { a24, b11 }, 1, Point3d.Unset, 0);
     Check("JGD2011 と JGD2024 が混ざると先頭に警告", Lines(mixed)[0].StartsWith("Warning: srsName の違う区画が混ざっています") && Lines(mixed)[0].Contains("fguuid:jgd2011.bl: 区画 2"));
     Check("警告が出てもメッシュは作られる", mixed[7] is Mesh && ((Mesh)mixed[7]).Faces.Count == 9 * 3);
-    var p = ((Mesh)G.Run(a24, 1, Point3d.Unset, 0, 1)[7]).Vertices.P[1 * 5 + 2];
-    var clipped = G.Run(new List<string> { a24, b11 }, 1, new Point3d(p.X, p.Y, 0), 6, 1);
+    var p = ((Mesh)G.Run(a24, 1, Point3d.Unset, 0)[7]).Vertices.P[1 * 5 + 2];
+    var clipped = G.Run(new List<string> { a24, b11 }, 1, new Point3d(p.X, p.Y, 0), 6);
     Check("クリッピングで外れた区画は警告の対象外", !Lines(clipped)[0].StartsWith("Warning") && Line(clipped, "[2]").Contains("(skipped)"));
-    Check("srsName のないGMLは「(srsName なし)」と表示", Line(G.Run(G.Tile(0, 0, 5, 4, 4), 1, Point3d.Unset, 0, 1), "[1]").Contains("(srsName なし)"));
+    Check("srsName のないGMLは「(srsName なし)」と表示", Line(G.Run(G.Tile(0, 0, 5, 4, 4), 1, Point3d.Unset, 0), "[1]").Contains("(srsName なし)"));
   }
 
   // sample フォルダの国土地理院GML（2次メッシュ 513253, DEM5A）を使うテスト
   static void RealData(string dir) {
     Section("実データ（sample）");
     if (dir == null || !Directory.Exists(dir)) {
-      Skip("実データのテストすべて", "sample が見つかりません。README「サンプルデータの入手」を参照");
+      Skip("実データのテストすべて", "テスト用のデータ（2次メッシュ 513253 の DEM5A）が見つかりません。README「テスト」を参照");
       return;
     }
     Console.WriteLine("sample: " + dir);
@@ -200,13 +278,13 @@ public static class Tests {
 
     if (t62 == null || t63 == null) Skip("東西の境目（62・63）", "区画のファイルがありません");
     else {
-      var a = G.Call(new List<string> { t62, t63 }, 0, 1, Point3d.Unset, 0, 1, 0);
+      var a = G.Call(new List<string> { t62, t63 }, 0, 1, Point3d.Unset, 0, 0);
       var P = ((Mesh)a[7]).Vertices.P; int nX = 450, nY = 150;
       Check("62+63: 系の自動判定は3系（広島市付近）", Line(a, "JGD Zone").Contains("3 (Auto Detected)"));
       Check("62+63: 450×150点で無効な点がない", P.Count == nX * nY && P.All(v => v.set));
       Check("62+63: 面の数 = 449×149（すき間なし）", ((Mesh)a[7]).Faces.Count == (nX - 1) * (nY - 1));
-      var p62 = ((Mesh)G.Call(t62, 0, 1, Point3d.Unset, 0, 1, 0)[7]).Vertices.P;
-      var p63 = ((Mesh)G.Call(t63, 0, 1, Point3d.Unset, 0, 1, 0)[7]).Vertices.P;
+      var p62 = ((Mesh)G.Call(t62, 0, 1, Point3d.Unset, 0, 0)[7]).Vertices.P;
+      var p63 = ((Mesh)G.Call(t63, 0, 1, Point3d.Unset, 0, 0)[7]).Vertices.P;
       double maxd = 0;
       for (int r = 0; r < nY; r++) for (int c = 0; c < 225; c++) {
         Point3d m1 = P[r * nX + c], s1 = p62[r * 225 + c], m2 = P[r * nX + 225 + c], s2 = p63[r * 225 + c];
@@ -220,7 +298,7 @@ public static class Tests {
 
     if (t52 == null || t53 == null || t62 == null || t63 == null) Skip("南北の境目（52・53・62・63）", "区画のファイルがありません");
     else {
-      var b = G.Call(new List<string> { t53, t62, t52, t63 }, 0, 1, Point3d.Unset, 0, 1, 0);
+      var b = G.Call(new List<string> { t53, t62, t52, t63 }, 0, 1, Point3d.Unset, 0, 0);
       var Q = ((Mesh)b[7]).Vertices.P; int qX = 450;
       int seamFaces = 0;
       for (int c = 0; c < qX - 1; c++) if (Q[149 * qX + c].set && Q[149 * qX + c + 1].set && Q[150 * qX + c].set && Q[150 * qX + c + 1].set) seamFaces++;
@@ -230,9 +308,9 @@ public static class Tests {
     if (t06 == null || t07 == null || t16 == null || t17 == null) Skip("種別による分け方（06・07・16・17）", "区画のファイルがありません");
     else {
       var files = new List<string> { t06, t07, t16, t17 };
-      var a0 = G.Call(files, 3, 1, Point3d.Unset, 0, 1, 0);
-      var a1 = G.Call(files, 3, 1, Point3d.Unset, 0, 1, 1);
-      var a2 = G.Call(files, 3, 1, Point3d.Unset, 0, 1, 2);
+      var a0 = G.Call(files, 3, 1, Point3d.Unset, 0, 0);
+      var a1 = G.Call(files, 3, 1, Point3d.Unset, 0, 1);
+      var a2 = G.Call(files, 3, 1, Point3d.Unset, 0, 2);
       var single = FaceKeys((Mesh)a0[7]);
       var parts = (List<Mesh>)a1[8]; var names = (List<string>)a1[9];
       var union = parts.SelectMany(m => FaceKeys(m)).ToList(); union.Sort(StringComparer.Ordinal);
@@ -244,16 +322,16 @@ public static class Tests {
 
     if (t62 == null || t63 == null) Skip("srsName（62・63）", "区画のファイルがありません");
     else {
-      var ok = G.Call(new List<string> { t62, t63 }, 0, 1, Point3d.Unset, 0, 1, 0);
+      var ok = G.Call(new List<string> { t62, t63 }, 0, 1, Point3d.Unset, 0, 0);
       Check("実データの srsName が表示され、そろっていれば警告なし", !Lines(ok)[0].StartsWith("Warning") && Line(ok, "[1]").Contains("fguuid:"), Line(ok, "[1]").Trim());
       string old63 = t63.Replace("fguuid:jgd2024.bl", "fguuid:jgd2011.bl");
       if (old63 == t63) Skip("JGD2011 の区画が混ざったときの警告（実データ）", "sample の srsName が jgd2024 ではありません");
-      else Check("JGD2011 と書き換えた区画が混ざると警告", Lines(G.Call(new List<string> { t62, old63 }, 0, 1, Point3d.Unset, 0, 1, 0))[0].StartsWith("Warning"));
+      else Check("JGD2011 と書き換えた区画が混ざると警告", Lines(G.Call(new List<string> { t62, old63 }, 0, 1, Point3d.Unset, 0, 0))[0].StartsWith("Warning"));
     }
 
     var all = Directory.GetFiles(dir, "*.xml").OrderBy(x => x).Select(File.ReadAllText).ToList();
     var sw = Stopwatch.StartNew();
-    var z = G.Call(all, 0, 4, Point3d.Unset, 0, 1, 2);
+    var z = G.Call(all, 0, 4, Point3d.Unset, 0, 2);
     Check("sample の全区画（" + all.Count + " 区画、step 4）を読み込める", z[7] is Mesh && !G.Info(z).StartsWith("Error"), sw.ElapsedMilliseconds + " ms, " + Line(z, "Output Mesh").Trim());
   }
 }

@@ -21,8 +21,8 @@
 | `tests/run_tests.ps1` | テストのビルドと実行 |
 | `tests/tests.cs` | テスト本体（合成データ／実データ） |
 | `tests/gml.cs` | 合成GMLの作成と RunScript の呼び出し |
-| `tests/stubs.cs` | Rhino なしでコンパイルするための仮の型 |
-| `sample/` | 国土地理院のGML（各自ダウンロード。`.gitignore` で除外） |
+| `tests/stubs.cs` | Rhino なしでコンパイルするための仮の型（Mesh・Point3d、文書の単位の RhinoDoc・RhinoMath） |
+| `sample/` | 国土地理院のGMLの置き場所（各自ダウンロード。`.gitignore` で除外）。実データのテストは 2次メッシュ 513253 の DEM5A をここに置いたときだけ動く |
 
 ## 開発時の必須ルール
 
@@ -34,7 +34,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
 
 - **コミットの条件:** 全テストが通る（終了コード 0）ことを確認してからコミットする。
 - **終了コードを潰さない:** 結果を `| tail` や `| grep` に通さない。失敗しても後続が止まらなくなる。
-- **sample が無いとき:** 実データのテストは SKIP になる。合成データのテストだけでも、座標・統合・種別・srsName の主要な不具合は検出できる。
+- **sample が無いとき:** 実データのテストは SKIP になる。合成データのテスト（65件）だけでも、座標変換・統合・地域設定・単位・種別・srsName の主要な不具合は検出できる。sample があれば実データの12件も加わり、全77件になる。
 - **テストの環境:** テストは Windows に入っている .NET Framework 4.x の `csc`（C# 5）でビルドする。そのため、`tests/` の中では文字列補間（`$"..."`）や `?.` などの新しい書き方は使えない。`dem2mesh.cs` の `Math.Atanh` は、テスト用のコピーだけ `MathX.Atanh` に置き換える。
 
 ### 2. `dem2mesh.cs` を変えたら、`dem2mesh.gh` の中のコードも貼り直す
@@ -42,7 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
 - **自動では変わらない:** .gh には `dem2mesh.cs` のコピーが埋め込まれている。
 - **貼り直し方:** 入出力（名前・型・List Access・Flatten）はそのままで、コードだけ貼り直す。Rhino 8 の C# コンポーネントは、`RunScript` の引数を「いまある入出力」に合わせて書き換える。
 - **入出力を変えた場合:** 入出力を変えたときは、Grasshopper 上で入出力を先に作ってから貼る。
-- **保存の注意:** .gh は File Path を空にした状態で保存する。
+- **保存の注意:** .gh は File Path を空にし、系の Value List を「自動判定」にした状態で保存する。特定の地域を前提にしない。
 
 ### 3. テストで見られない範囲（Rhino 上で手で確かめる）
 
@@ -51,6 +51,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
 - **Rhino の表示:** 頂点カラーの見え方、Shaded での表示、縮小時に面の線で黒く見えること。
 - **Rhino 固有の動き:** 同じ座標の頂点をつながったものとして扱うこと（開いた辺・DisjointMeshCount）。仮の型にはない。
 - **Grasshopper:** 入出力（Type Hint・List Access・Flatten）、プレビュー、Bake、`RunScript` の引数の書き換え。
+- **本物の文書の単位:** テストは仮の `RhinoDoc` で単位を差し替えるだけ。本物の Rhino の `RhinoDoc.ActiveDoc` と `RhinoMath.UnitScale` で正しく換算されるかは、Rhino 上で確かめる（Version 1.2 では、mm の文書でちょうど1000倍になることを確かめた）。
 - **.NET の違い:** .NET 7/8 と .NET Framework の違い（`Math.Atanh` など）。
 - **重さ:** 大きなデータでの速度・メモリ。README「扱える区画数の目安」は Rhino 8 上の実測。
 - **確かめ方:** Rhino 8 では、Roslyn（`C:\Program Files\Rhino 8\System\Microsoft.CodeAnalysis*.dll` を `#r` で参照）で `dem2mesh.cs` をそのままコンパイルして呼べる。
@@ -63,6 +64,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
 
 ## 設計上の重要な決定（変更しないこと）
 
+- **座標変換は常に6次展開で、定数は1回だけ計算する（`Projection`）:** 国土地理院の測量計算サイトと 0.05 mm 以内で一致する。3次展開との差は 0.016 mm 以下で、精度のために3次を選ぶ理由はない。以前 3次のほうが速かったのは、点ごとに係数（`Math.Pow` など）を計算し直していたため。処理モード（`mode`）は Version 1.2 で廃止した。
+- **補間はしない:** メッシュの頂点は DEM の格子点そのものなので、補間しても値は変わらない。補間が要るのは、データ点と別の位置に点を作り直す機能（X・Y 軸にそろった格子、平均での間引き）を作るときだけ。
+- **出力は Rhino の文書の単位に換算する:** 計算はメートルで行い、頂点の座標と標高だけを換算する。`target_point` と `size` は文書の単位で受けて、メートルに戻して比べる。文書がなければメートルのまま。
+- **GMLの数値は地域設定に関係なく読む:** `double.Parse` などには必ず `CultureInfo.InvariantCulture` を付ける（`ParseDouble`・`ParseInt`）。付けないと、ドイツ語の設定では座標が警告なしに狂う。
 - **標高点はセルの中心に置く:** 外枠（lowerCorner/upperCorner）を点の数で等分する。仕様書 V5.3「DEM区画」で、外枠はメッシュの境界線で、セルに値が割り当てられるため。
 - **複数区画は1つの格子にまとめてから、1枚のメッシュを作る（案1）:** 区画ごとに作って縫う方式や、Delaunay より、すき間・ずれが出ない。
 - **セルの大きさは 0.0001″ 単位に丸める:** 四隅が小数8桁に丸められているので、そのまま割ると遠い区画ほど誤差が積み重なる。DEM のセルは 0.04″・0.2″・0.4″ と秒で決まっている。
@@ -91,14 +96,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
 
 ## 現在の状況
 
-- **版:** README の更新履歴は Version 1.1（複数区画の統合、セル中心、srsName の警告、種別の色分け、`dem2mesh.gh`、11・12系の修正）。
+- **版:** README の更新履歴は Version 1.2（処理モードの廃止と6次展開への一本化、文書の単位への換算、地域設定に左右されない読み込み）。
 - **リポジトリ:** 非公開。
-- **直近で入れたもの:** `tests/` と `run_tests.ps1`、CLAUDE.md。
+- **直近で入れたもの:** Version 1.2 の3点と、国土地理院の計算値・地域設定・単位のテスト。
 
 ### 検討中の項目
 
-- **mode 2 の補間が効かない:** 整数の格子位置を渡しているので、重みが常に0になる。mode 1 と同じ結果。README と .gh に明記済み。
-- **系の自動判定が経度しか見ない:** 札幌が10系になる。都道府県や緯度を見る判定にするか。
+- **系の自動判定が経度しか見ない:** 札幌が10系になる。.gh の初期値が自動判定なので影響が大きい。自動判定で決めたときに info で警告するか、緯度も見る判定にするか。
+- **xml_data にファイルのパスを直接渡せるようにする:** Read File の Per Line オフや Flatten の手間をなくす。
+- **LICENSE ファイルがない:** README は MIT と書いている。
 - **info の度分秒で秒が 60.00 になる:** 繰り上がりの処理がない。
 - **Grasshopper のプレビューが重い:** 数十区画を超えると重くなる可能性がある。プレビューの描画時間は測れていない。
 - **`type_output` = 1 だとプレビューに何も出ない:** `dem2mesh.gh` では `type_meshes` のプレビューを切ってあるため。
@@ -113,9 +119,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
   - 不具合：北海道の西部・中央部で、南北に約444 kmずれていた。
   - 型：定数の表を一次資料（告示）と1件ずつ照合していなかった。
   - テスト：Zones（19系すべて）。
-- **mode 2 の補間（未修正）:**
-  - 不具合：補間の関数に整数を渡しているので、補間にならない。
-  - 型：「補間あり」と書いてあるが、結果が変わることを確かめていなかった。
+- **処理モード（Version 1.2 で廃止）:**
+  - 不具合：mode 2 は補間の関数に整数を渡していて、補間にならなかった。そもそも頂点がデータ点なので、補間しても値は変わらない設計だった。README の「3次はセンチメートルオーダー」も誤りで、実際の差は 0.016 mm 以下。
+  - 型：以前の検討（別のAI）の結論を、実際に結果を比べて確かめないまま残していた。機能や精度の説明は、計測か一次資料で裏付ける。
+  - テスト：ProjectionAccuracy（国土地理院の計算値と照合）。
+- **地域設定で数値の読み込みが変わる（Version 1.2 で修正）:**
+  - 不具合：`double.Parse` を地域設定のまま使っていた。ドイツ語では「.」が桁区切りと見なされ、エラーにならずに座標が狂った。フランス語ではエラーになった。
+  - 型：日本語の環境でしか動かしていなかった。ファイルの数値を読むときは必ず InvariantCulture を付ける。
+  - テスト：Culture（de-DE・fr-FR・ru-RU）。
+- **出力の単位（Version 1.2 で修正）:**
+  - 不具合：メートルのまま出していたので、Rhino の標準テンプレート（mm）では1000分の1の大きさになった。
+  - 型：作者の環境（m の文書）でしか確かめていなかった。
+  - テスト：Units（仮の RhinoDoc で m・mm）。本物の Rhino でも確かめる。
 - **README の「結合すると境目が開いた辺になる」（誤り）:**
   - 型：仮の型での推測を、Rhino で確かめずに書いた。Rhino は同じ座標の頂点をつながりとして扱う。
 - **確認作業での失敗:**

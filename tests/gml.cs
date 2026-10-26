@@ -1,6 +1,7 @@
 // テスト用の合成GMLと、RunScript の呼び出し
 using System;
 using System.Text;
+using System.Globalization;
 using System.Reflection;
 using System.Collections.Generic;
 using Rhino.Geometry;
@@ -21,9 +22,10 @@ public static class G {
       string name = kind == null ? "地表面" : kind(gc0 + c, gr0 + r);
       sb.Append(name + "," + (100 + (gr0 + r) * 1000 + (gc0 + c)) + ".\n");
     }
-    // 実データと同じく、四隅は小数8桁に丸める
-    string corners = "<gml:lowerCorner>" + lLat.ToString("F8") + " " + lLon.ToString("F8") + "</gml:lowerCorner>"
-                   + "<gml:upperCorner>" + uLat.ToString("F8") + " " + uLon.ToString("F8") + "</gml:upperCorner>";
+    // 実データと同じく、四隅は小数8桁に丸め、小数点は「.」で書く
+    var inv = CultureInfo.InvariantCulture;
+    string corners = "<gml:lowerCorner>" + lLat.ToString("F8", inv) + " " + lLon.ToString("F8", inv) + "</gml:lowerCorner>"
+                   + "<gml:upperCorner>" + uLat.ToString("F8", inv) + " " + uLon.ToString("F8", inv) + "</gml:upperCorner>";
     if (srs != null) corners = "<gml:Envelope srsName='" + srs + "'>" + corners + "</gml:Envelope>";
     return "<r xmlns:gml='http://www.opengis.net/gml/3.2'>" + corners
          + "<gml:high>" + (nx - 1) + " " + (ny - 1) + "</gml:high>"
@@ -32,15 +34,15 @@ public static class G {
   }
 
   // RunScript を呼ぶ。戻り値は {0-5: 入力, 6: info, 7: output_mesh, 8: type_meshes, 9: type_names}
-  public static object[] Call(object xml, int zone, int step, Point3d tp, double size, int mode, int typeOut) {
+  public static object[] Call(object xml, int zone, int step, Point3d tp, double size, int typeOut) {
     var s = new Script_Instance();
     var m = typeof(Script_Instance).GetMethod("RunScript", BindingFlags.NonPublic | BindingFlags.Instance);
     object arg = xml is string ? new List<string> { (string)xml } : xml;
-    object[] b = { arg, zone, step, tp, size, mode, typeOut, null, null, null, null };
+    object[] b = { arg, zone, step, tp, size, typeOut, null, null, null, null };
     m.Invoke(s, b);
-    return new object[] { b[0], b[1], b[2], b[3], b[4], b[5], b[7], b[8], b[9], b[10] };
+    return new object[] { b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9] };
   }
-  public static object[] Run(object xml, int step, Point3d tp, double size, int mode) { return Call(xml, 9, step, tp, size, mode, 0); }
+  public static object[] Run(object xml, int step, Point3d tp, double size) { return Call(xml, 9, step, tp, size, 0); }
 
   public static string Info(object[] a) {
     if (a[6] is string) return (string)a[6];
